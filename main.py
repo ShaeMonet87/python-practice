@@ -152,6 +152,8 @@ total_cost = total_flour_cost + total_sugar_cost + total_butter_cost + total_mil
 
 print(f"Total cost to make {recipe_name}: ${total_cost:.2f}")
 
+
+
 recipe_name = "Muffins"
 
 # Ingredients required for muffins
@@ -186,4 +188,41 @@ total_chocolate_chips_cost = (chocolate_chips_needed * chocolate_chips_cost)
 total_cost = total_flour_cost + total_sugar_cost + total_butter_cost + total_milk_cost + total_eggs_cost + total_baking_powder_cost + total_vanilla_extract_cost + total_chocolate_chips_cost
 
 print(f"Total cost to make {recipe_name}: ${total_cost:.2f}")
+
+def calculate_total_cost(
+                        recipe_name="default_recipe_name",
+                        flour_needed=0,
+                        sugar_needed=0,
+                        butter_needed=0,
+                        milk_needed=0,
+                        eggs_needed=0,
+                        baking_powder_needed=0,
+                        baking_soda_needed=0,
+                        water_needed=0,
+                        yeast_needed=0,
+                        salt_needed=0
+                    ):
+    total_flour_cost = (flour_needed * flour_cost)
+    total_sugar_cost = (sugar_needed * sugar_cost)
+    total_butter_cost = (butter_needed * butter_cost)
+    total_milk_cost = (milk_needed * milk_cost)
+    total_eggs_cost = (eggs_needed * eggs_cost)
+    total_baking_powder_cost = (baking_powder_needed * baking_powder_cost)
+    total_baking_soda_cost = (baking_soda_needed * baking_soda_cost)
+
+    total_cost = total_flour_cost + total_sugar_cost + total_butter_cost + total_milk_cost + total_eggs_cost + total_baking_powder_cost + total_baking_soda_cost
+
+    print(f"Total cost to make {recipe_name}: ${total_cost:.2f}")
+
+calculate_total_cost(
+    recipe_name="Pancakes",
+    flour_needed = 0.3, # kg
+    sugar_needed = 0.05, # kg
+    butter_needed = 0.1, # kg
+    milk_needed = 0.4, # liter
+    eggs_needed = 2, # eggs
+    baking_powder_needed = 10, # grams
+    baking_soda_needed = 5
+ )
+
 
