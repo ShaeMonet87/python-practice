@@ -202,6 +202,7 @@ def calculate_total_cost(
                         yeast_needed=0,
                         salt_needed=0
                     ):
+                    
     total_flour_cost = (flour_needed * flour_cost)
     total_sugar_cost = (sugar_needed * sugar_cost)
     total_butter_cost = (butter_needed * butter_cost)
@@ -216,13 +217,12 @@ def calculate_total_cost(
 
 calculate_total_cost(
     recipe_name="Pancakes",
-    flour_needed = 0.3, # kg
-    sugar_needed = 0.05, # kg
-    butter_needed = 0.1, # kg
-    milk_needed = 0.4, # liter
-    eggs_needed = 2, # eggs
-    baking_powder_needed = 10, # grams
-    baking_soda_needed = 5
- )
-
+    flour_needed=0.3, # kg
+    sugar_needed=0.05, # kg
+    butter_needed=0.1, # kg
+    milk_needed=0.4, # liter
+    eggs_needed=2, # eggs
+    baking_powder_needed=10, # grams
+    baking_soda_needed=5
+)
 
