@@ -215,6 +215,8 @@ def calculate_total_cost(
 
     print(f"Total cost to make {recipe_name}: ${total_cost:.2f}")
 
+    return total_cost
+
 calculate_total_cost(
     recipe_name="Pancakes",
     flour_needed=0.3, # kg
