@@ -1,1 +1,3 @@
 .venv/
+.DS_Store
+billable_hours.xlsx
