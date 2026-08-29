@@ -1,4 +1,5 @@
 import subprocess
+from pathlib import Path
 
 result = subprocess.run(
     [
@@ -18,15 +19,20 @@ print("Number of lines:", len(lines))
 
 entries = []
 current_entry = {}
+current_date = ""
 
 for line in lines:
-    if line.startswith("Date:"):
+    if line.startswith("Project:"):
         if current_entry:
             entries.append(current_entry)
-        current_entry = {"date": line.replace("Date:", "").strip()}
+        current_entry = {
+            "project": line.replace("Project:", "").strip(),
+            "date": current_date
+}
 
-    elif line.startswith("Project:"):
-        current_entry["project"] = line.replace("Project:", "").strip()
+    elif line.startswith("Date:"):
+        current_date = line.replace("Date:", "").strip()
+        current_entry["date"] = current_date
 
     elif line.startswith("Hours:"):
         current_entry["hours"] = line.replace("Hours:", "").strip()
@@ -39,6 +45,7 @@ if current_entry:
 
 print("Entries found:", len(entries))
 
+
 for entry in entries:
     if "hours" in entry:
         entry["hours"] = float(entry["hours"])
@@ -46,22 +53,44 @@ for entry in entries:
 for i, entry in enumerate(entries, start=1):
     print(f"Entry {i}: {len(entry)} fields")
 
-from openpyxl import Workbook
+excel_file = Path(__file__).parent / "billable_hours.xlsx"
 
-workbook = Workbook()
-sheet = workbook.active
-sheet.title = "Billable Hours"
+from openpyxl import Workbook, load_workbook
 
-sheet.append(["Date", "Project", "Hours", "Description"])
+if excel_file.exists():
+    workbook = load_workbook(excel_file)
+    sheet = workbook["Billable Hours"]
+else:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Billable Hours"
+    sheet.append(["Date", "Project", "Hours", "Description"])
+
+existing_entries = set()
+
+for row in sheet.iter_rows(min_row=2, values_only=True):
+    project = row[1]
+    hours = row[2]
+    description = row[3]
+
+    existing_entries.add((project, hours, description))
 
 for entry in entries:
-    sheet.append([
-        entry.get("date", ""),
-        entry.get("project", ""),
-        entry.get("hours", ""),
-        entry.get("description", "")
-    ])
+    project = entry.get("project", "")
+    hours = entry.get("hours", "")
+    description = entry.get("description", "")
 
-workbook.save("billable_hours.xlsx")
+    entry_key = (project, hours, description)
+
+    if entry_key not in existing_entries:
+        sheet.append([
+            entry.get("date", ""),
+            project,
+            hours,
+            description
+        ])
+        existing_entries.add(entry_key)
+
+workbook.save(excel_file)
 
 print("Excel file updated.")
