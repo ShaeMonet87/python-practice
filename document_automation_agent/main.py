@@ -94,3 +94,4 @@ for entry in entries:
 workbook.save(excel_file)
 
 print("Excel file updated.")
+
