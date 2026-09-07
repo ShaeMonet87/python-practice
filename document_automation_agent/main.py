@@ -19,20 +19,18 @@ print("Number of lines:", len(lines))
 
 entries = []
 current_entry = {}
-current_date = ""
 
 for line in lines:
-    if line.startswith("Project:"):
+    if line.startswith("Date:"):
         if current_entry:
             entries.append(current_entry)
-        current_entry = {
-            "project": line.replace("Project:", "").strip(),
-            "date": current_date
-}
 
-    elif line.startswith("Date:"):
-        current_date = line.replace("Date:", "").strip()
-        current_entry["date"] = current_date
+        current_entry = {
+            "date": line.replace("Date:", "").strip()
+        }
+
+    elif line.startswith("Project:"):
+        current_entry["project"] = line.replace("Project:", "").strip()
 
     elif line.startswith("Hours:"):
         current_entry["hours"] = line.replace("Hours:", "").strip()
@@ -69,18 +67,24 @@ else:
 existing_entries = set()
 
 for row in sheet.iter_rows(min_row=2, values_only=True):
+    date = row[0]
     project = row[1]
     hours = row[2]
     description = row[3]
 
-    existing_entries.add((project, hours, description))
+    existing_entries.add((date, project, hours, description))
 
 for entry in entries:
     project = entry.get("project", "")
     hours = entry.get("hours", "")
     description = entry.get("description", "")
 
-    entry_key = (project, hours, description)
+    entry_key = (
+    entry.get("date", ""),
+    project,
+    hours,
+    description
+)
 
     if entry_key not in existing_entries:
         sheet.append([
