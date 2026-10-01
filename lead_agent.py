@@ -1,7 +1,11 @@
-
 import os
 import json
+import time
 import requests
+from ddgs import DDGS
+from dotenv import load_dotenv
+# from google import genai
+from openpyxl import Workbook, load_workbook
 
 
 # ============================================================
@@ -12,244 +16,435 @@ SEARCH_URL = "http://localhost:8080/search"
 QWEN_URL = "http://localhost:11434/api/generate"
 QWEN_MODEL = "qwen3:1.7b"
 
+# GEMINI_MODEL = "gemini-3.8-flash"
+
+EXCEL_PATH = "pm_leads.xlsx"
+
+COLUMNS = ["Company", "Type", "Score", "Reason", "Source URL"]
+
+VELA_CONTEXT_PATH = "vela_context.md"
+
+
+# ============================================================
+# GEMINI
+# ============================================================
+
+# load_dotenv()
+
+# GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+# if not GEMINI_API_KEY:
+#     raise RuntimeError("GEMINI_API_KEY is not set.")
+
+# gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+
+
+# def call_gemini(prompt: str, model: str = GEMINI_MODEL, max_retries: int = 5) -> str:
+#     """Call Gemini with automatic retry on 503 (model busy) errors."""
+#     for attempt in range(max_retries):
+#         try:
+#             response = gemini_client.models.generate_content(
+#                 model=model,
+#                 contents=prompt
+#             )
+#             return response.text
+#         except Exception as e:
+#             if "503" in str(e) and attempt < max_retries - 1:
+#                 wait = 5 * (attempt + 1)
+#                 print(f"    Critic model busy, retrying in {wait}s...")
+#                 time.sleep(wait)
+#             else:
+#                 raise
+
+
+# def critic_review(analysis: dict, company_info: str) -> dict:
+#     """Re-check every signal the Analyst marked True against the evidence."""
+#     signals = analysis.get("signals", {})
+
+#     true_signals = {
+#         name: data.get("evidence", "")
+#         for name, data in signals.items()
+#         if data.get("supported") is True
+#     }
+
+#     if not true_signals:
+#         return analysis
+
+#     signals_text = "\n".join(
+#         f"- {name}: claimed evidence = \"{evidence}\""
+#         for name, evidence in true_signals.items()
+#     )
+
+#     prompt = f"""
+# You are auditing another AI's evidence claims. Be skeptical, not agreeable.
+
+# SEARCH RESULT:
+# {company_info}
+
+# The other AI marked these signals as TRUE and cited this evidence for each:
+
+# {signals_text}
+
+# RULE: A signal may only stay TRUE if the cited evidence is DIRECTLY stated
+# in the search result above — not implied, assumed, or inferred from industry
+# stereotypes. If the evidence is missing, vague, or not actually in the text,
+# the signal must be marked FALSE.
+
+# Return ONLY valid JSON in this exact structure, one entry per signal listed above:
+
+# {{
+#     "signal_name": {{"confirmed": true or false, "note": "short reason"}}
+# }}
+# """
+
+#     answer = call_gemini(prompt)
+
+#     try:
+#         cleaned = answer.strip().removeprefix("```json").removesuffix("```").strip()
+#         critic_result = json.loads(cleaned)
+#     except json.JSONDecodeError:
+#         print("  Critic returned invalid JSON — keeping Analyst's original signals")
+#         return analysis
+
+#     for signal_name, verdict in critic_result.items():
+#         if signal_name in signals and verdict.get("confirmed") is False:
+#             print(f"  Critic overturned: {signal_name} — {verdict.get('note', '')}")
+#             signals[signal_name]["supported"] = False
+
+#     return analysis
+
+# ============================================================
+# VELA CONTEXT (NEW)
+# ============================================================
+
+def load_vela_context(path: str = VELA_CONTEXT_PATH) -> str:
+    """Load Vela's business description from an external markdown file.
+
+    Args:
+        path: Path to the markdown file describing Vela's services and context.
+
+    Returns:
+        The file's raw text content, to be dropped straight into the prompt.
+    """
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+VELA_CONTEXT = load_vela_context()
+
 
 # ============================================================
 # SCORING RUBRIC
 # ============================================================
 
 SCORE_WEIGHTS = {
-    "portugal": 15,
-    "porto_gaia": 10,
-    "employees_5_100": 10,
-    "hiring": 15,
-    "website_modernization": 15,
-    "digital_transformation": 10,
-    "no_internal_tech_team": 10,
-    "expansion_news": 10,
+    "contract_opportunity": 25,
+    "project_product_management_need": 20,
+    "remote_or_hybrid": 15,
+    "porto_gaia": 15,
+    "tech_or_media_company": 10,
+    "current_open_opportunity": 10,
     "decision_maker": 5,
 }
 
 
 # ============================================================
-# SEARCH
+# EXCEL SAVING (NEW)
 # ============================================================
 
-search_response = requests.get(
-    SEARCH_URL,
-    params={
-        "q": "Porto Portugal company expansion hiring new facility growth",
-        "format": "json"
-    },
-    timeout=30
-)
+def save_lead(company: str, lead_type: str, score: int, reason: str, url: str) -> bool:
+    """Append a lead to pm_leads.xlsx, skipping it if the company is already saved.
 
-search_response.raise_for_status()
+    Args:
+        company: The company name identified by the Analyst.
+        lead_type: "opportunity", "potential_opportunity", or "irrelevant".
+        score: The calculated numeric score (0-100).
+        reason: The Analyst's short explanation for the classification.
+        url: The source URL the lead was found at.
 
-results = search_response.json()["results"][:10]
+    Returns:
+        True if the lead was newly added, False if it was skipped as a duplicate.
+    """
+    # Open the existing file, or start a new one with headers if it doesn't exist yet
+    if os.path.exists(EXCEL_PATH):
+        workbook = load_workbook(EXCEL_PATH)
+        sheet = workbook.active
+    else:
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append(COLUMNS)
+
+    # Check every existing row's company name (column A) for a case-insensitive match
+    existing_companies = {
+        str(row[0].value).strip().lower()
+        for row in sheet.iter_rows(min_row=2)
+        if row[0].value
+    }
+
+    if company.strip().lower() in existing_companies:
+        print(f"  Skipped (already saved): {company}")
+        return False
+
+    sheet.append([company, lead_type, score, reason, url])
+    workbook.save(EXCEL_PATH)
+    print(f"  Saved: {company}")
+    return True
 
 
-# ============================================================
-# PROCESS EACH SEARCH RESULT
-# ============================================================
+def run_query(query: str) -> None:
+    """Search for one query phrase and analyze/save each result.
 
-for result in results:
+    Args:
+        query: The search phrase to send to SearXNG.
+    """
+    # ============================================================
+    # SEARCH
+    # ============================================================
 
-    company_info = f"""
-Title: {result.get("title", "")}
-Description: {result.get("content", "")}
-URL: {result.get("url", "")}
-"""
+    search_response = requests.get(
+        SEARCH_URL,
+        params={
+            "q": query,
+            "format": "json"
+        },
+        timeout=30
+    )
 
-    prompt = f"""
-You are qualifying sales leads for Vela Strategies.
+    search_response.raise_for_status()
 
-Vela Strategies helps businesses improve their internal operations through:
+    results = search_response.json().get("results", [])[:5]
 
-- automation
-- process improvement
-- digital transformation
-- technology modernization
-- systems integration
+    print(f"  SearXNG returned {len(results)} results")
+
+    if not results:
+        print("  SearXNG returned no usable results for this query.")
+        return
+
+    # Remove duplicate URLs from this search
+    seen_urls = set()
+    unique_results = []
+
+    for result in results:
+        url = result.get("url", "").strip()
+
+        if url and url not in seen_urls:
+            seen_urls.add(url)
+            unique_results.append(result)
+
+    results = unique_results
+
+    results = [result for result in results if result.get("url", "").strip()]
+
+    # ============================================================
+    # PROCESS EACH SEARCH RESULT
+    # ============================================================
+
+    for result in results:
+
+        company_info = f"""
+    Title: {result.get("title", "")}
+    Description: {result.get("content", "")}
+    URL: {result.get("url", "")}
+    """
+
+        prompt = f"""
+You are qualifying business opportunities for Vela Strategies.
+
+{VELA_CONTEXT}
+
+Analyze ONLY the search result provided below.
+
+SEARCH RESULT:
+{company_info}
+
+Your job is to determine whether this result identifies a useful business
+opportunity for Vela.
+
+A useful opportunity is evidence that an identifiable organization in Portugal
+has a current or recent need for project management or product management
+services that could potentially be provided by an external professional
+through Vela.
+
+============================================================
+CLASSIFICATION
+============================================================
+
+Classify the result as exactly one of:
+
+- "opportunity"
+  Direct evidence that the organization has a current or recent
+  project/product-management need AND the engagement may be suitable
+  for an external provider.
+
+  This includes:
+  - contract work
+  - freelance work
+  - consulting
+  - temporary work
+  - fixed-term work
+  - project-based work
+  - fractional work
+  - contractor arrangements
+  - situations where the organization explicitly accepts contractors,
+    consultants, agencies, or external service providers
+
+- "potential_opportunity"
+  The organization has a clear current or recent project/product-
+  management need, but the result does NOT provide evidence that the
+  organization is open to external, contract, freelance, consulting,
+  temporary, or similar arrangements.
+
+  A normal permanent/full-time Project Manager or Product Manager
+  employee vacancy should generally be classified as
+  "potential_opportunity".
+
+- "irrelevant"
+  The result is not useful for this campaign.
 
 IMPORTANT:
 
-Vela is looking for BUSINESSES THAT COULD BUY THESE SERVICES.
+A Project Manager or Product Manager job posting is NOT automatically
+an "opportunity" for Vela.
 
-A COMPETITOR is a company whose own business is primarily providing
-technology consulting, software development, automation, AI, IT
-outsourcing, or similar technology services to other businesses.
+A job posting can be an "opportunity" only when there is evidence that
+the engagement could be performed by an external provider.
 
-A company is NOT a competitor simply because it operates in technology,
-manufacturing, aerospace, retail, logistics, finance, hospitality, or
-another industry.
+If there is a relevant PM/product-management vacancy but the engagement
+type is unclear, classify it as "potential_opportunity".
 
-A company in those industries can still be a PROSPECT if it could
-reasonably purchase Vela's services.
+Do not assume that a company accepts contractors merely because:
+- the role is in technology
+- the role is remote or hybrid
+- the company is a startup
+- the role is senior
+- the role is project-based
+- the company has used contractors in the past
+- the job appears on a freelance website
 
-Also reject:
+Only mark an opportunity as suitable for external work when the result
+contains direct evidence of that arrangement.
 
-- job boards
-- recruiting companies
-- directories
-- news organizations
-- government/investment organizations
-- generic articles that do not identify a potential customer
+Job boards, recruiting platforms, freelancer marketplaces, and
+directories MAY be used as sources.
 
-Analyze this search result:
+A job-board result can be useful when it contains a relevant
+project/product-management vacancy that identifies the actual
+employer.
 
-{company_info}
+In that case:
 
-First identify the ACTUAL COMPANY being discussed.
+- The job board is the SOURCE.
+- The employer is the COMPANY.
+- The employer should be recorded as the company.
+- The job board URL may be retained as the source URL.
 
-Do not identify the search engine, publisher, website, or news organization
-as the company.
+Do NOT record the job board itself as the company.
 
-Then classify the result as exactly one of:
+For example, if a DailyRemote page contains a Project Manager
+vacancy for "Company X", identify Company X as the company.
 
-- "prospect"
-- "competitor"
-- "irrelevant"
+If a job board page only contains a general collection of jobs and
+does not identify a specific relevant employer, classify it as
+"irrelevant".
 
-A prospect should be a real business that could reasonably purchase
-Vela's services.
+A normal employee PM/Product Manager vacancy can still be a
+"potential_opportunity". It is useful because the partner may
+research the employer and determine whether they would consider
+contract, freelance, consulting, or external-provider arrangements.
 
-============================================================
-SCORING SIGNALS
-============================================================
-
-Evaluate the search result against these EXACT signals.
-
-1. portugal
-   +15 points
-
-   Is there evidence that the actual company operates, is expanding,
-   investing, hiring, or doing business in Portugal?
-
-2. porto_gaia
-   +10 points
-
-   Is there evidence specifically connecting the company to Porto,
-   Vila Nova de Gaia, or the surrounding Porto/Gaia area?
-
-3. employees_5_100
-   +10 points
-
-   Is there evidence that the company has approximately 5–100 employees?
-
-   Only mark this true when the result provides evidence for the
-   employee range. Do not guess based on company size.
-
-4. hiring
-   +15 points
-
-   Is there evidence that the company is currently hiring or has
-   recent hiring activity?
-
-5. website_modernization
-   +15 points
-
-   Is there actual evidence that the company's website appears outdated,
-   poorly maintained, difficult to use, technically weak, or otherwise
-   presents a possible website modernization opportunity?
-
-   Do NOT assume a website needs modernization merely because it is old.
-
-6. digital_transformation
-   +10 points
-
-   Is there actual evidence of digital transformation, automation,
-   technology modernization, systems integration, software/process
-   improvement, or a similar technology initiative?
-
-   Do NOT assume that a company needs digital transformation simply
-   because it is growing.
-
-7. no_internal_tech_team
-   +10 points
-
-   Is there evidence that the company does NOT appear to have an obvious
-   internal technology/IT team?
-
-   Only mark this true when there is reasonable evidence.
-
-   Lack of evidence about an IT team is NOT automatically proof that
-   there is no internal technology team.
-
-8. expansion_news
-   +10 points
-
-   Is there evidence of recent expansion, a new facility, investment,
-   acquisition, geographic expansion, growth, or other significant
-   business development?
-
-9. decision_maker
-   +5 points
-
-   Is an identifiable decision-maker or relevant person mentioned,
-   such as a founder, CEO, CTO, COO, operations manager, IT manager,
-   or other person who could potentially influence purchasing?
+Do not assume that an employer is open to contract work merely
+because the vacancy appears on a job board.
 
 ============================================================
-IMPORTANT EVIDENCE RULE
+SIGNALS
 ============================================================
 
-This is the MOST IMPORTANT rule in the task.
+Evaluate these EXACT signals.
 
-You are evaluating the SEARCH RESULT, not guessing what might be true
-about the company.
+1. contract_opportunity
++25 points
 
-A signal may ONLY be marked true when the provided search result contains
-direct evidence supporting that specific signal.
+Is there direct evidence of contract, freelance, consulting, consultant,
+fractional, temporary, fixed-term, part-time, project-based, or external
+professional work?
 
-If the result does not provide evidence for a signal, mark it false.
+2. project_product_management_need
++20 points
 
-NEVER turn an assumption, implication, possibility, or industry stereotype
-into evidence.
+Is there direct evidence of a need for project management, product management,
+technical project management, program management, delivery management,
+product operations, or similar work?
+
+3. remote_or_hybrid
++15 points
+
+Is there direct evidence that the opportunity is remote or hybrid?
+
+4. porto_gaia
++15 points
+
+Is there direct evidence connecting the organization or opportunity to
+Vila Nova de Gaia, Porto, or the Greater Porto area?
+
+5. tech_or_media_company
++10 points
+
+Is there direct evidence that the organization is a technology, software,
+SaaS, startup, product, digital agency, technology consulting, digital media,
+or technology/media company?
+
+6. current_open_opportunity
++10 points
+
+Is there direct evidence that the opportunity is currently open, active,
+recently posted, or otherwise currently actionable?
+
+7. decision_maker
++5 points
+
+Is an identifiable relevant person mentioned, such as a founder, CEO, CTO,
+COO, operations manager, product leader, project leader, or hiring manager?
+
+============================================================
+EVIDENCE RULE
+============================================================
+
+This is the most important rule.
+
+A signal may ONLY be marked true when the SEARCH RESULT itself contains
+direct evidence supporting that signal.
+
+Do not use outside knowledge.
+
+Do not guess.
+
+Do not infer from industry stereotypes.
+
+If evidence is missing or ambiguous, mark the signal false.
+
+For every TRUE signal, provide the specific evidence from the search result.
+
+For FALSE signals, leave the evidence field empty.
 
 Examples:
 
-- A new factory is evidence of expansion_news.
-  A new factory is NOT automatically evidence of digital_transformation.
+- A company being located in Porto supports porto_gaia.
+- A company being a technology company does NOT automatically support
+  project_product_management_need.
+- A company hiring does NOT automatically mean it needs project management.
+- A remote job does NOT automatically mean it is a contract opportunity.
+- A company's growth does NOT automatically mean it has a project-management need.
+- A company being in the technology industry supports tech_or_media_company,
+  but does not by itself prove there is a current opportunity.
 
-- A company being a technology company is NOT evidence that it has
-  digital_transformation needs.
+============================================================
+PORTUGAL REQUIREMENT
+============================================================
 
-- A company being in Porto is evidence for porto_gaia.
-  A company being in Lisbon is NOT evidence for porto_gaia.
+Only consider opportunities located in Portugal.
 
-- Not seeing an IT department mentioned is NOT evidence of
-  no_internal_tech_team.
-
-- A company having 200 employees is NOT evidence for employees_5_100.
-
-- A company hiring is evidence for hiring.
-  Hiring is NOT automatically evidence of digital_transformation.
-
-- A company operating in aerospace, manufacturing, logistics,
-  hospitality, technology, or another industry does NOT make it a
-  competitor.
-
-- A company is a competitor ONLY when its primary business is providing
-  technology consulting, software development, automation, AI,
-  IT outsourcing, or similar technology services to other businesses.
-
-- A company being large, successful, or growing does NOT automatically
-  mean it needs Vela's services.
-
-When evidence is ambiguous, choose FALSE.
-
-When evidence is missing, choose FALSE.
-
-When evidence supports only one signal, mark only that signal true.
-
-Do not use knowledge from outside the provided search result.
-
-For every signal marked TRUE, provide the exact fact from the search
-result that supports it.
-
-For signals marked FALSE, leave the evidence field empty.
-
-Your job is to identify evidence, NOT to make optimistic sales assumptions.
+If the search result clearly concerns an opportunity outside Portugal,
+classify it as "irrelevant".
 
 ============================================================
 OUTPUT
@@ -257,13 +452,21 @@ OUTPUT
 
 Return ONLY valid JSON.
 
-Use this exact structure:
+Use exactly this structure:
 
 {{
-    "company": "actual company name",
-    "type": "prospect",
+    "company": "actual organization name",
+    "type": "opportunity",
     "signals": {{
-        "portugal": {{
+        "contract_opportunity": {{
+            "supported": false,
+            "evidence": ""
+        }},
+        "project_product_management_need": {{
+            "supported": false,
+            "evidence": ""
+        }},
+        "remote_or_hybrid": {{
             "supported": false,
             "evidence": ""
         }},
@@ -271,27 +474,11 @@ Use this exact structure:
             "supported": false,
             "evidence": ""
         }},
-        "employees_5_100": {{
+        "tech_or_media_company": {{
             "supported": false,
             "evidence": ""
         }},
-        "hiring": {{
-            "supported": false,
-            "evidence": ""
-        }},
-        "website_modernization": {{
-            "supported": false,
-            "evidence": ""
-        }},
-        "digital_transformation": {{
-            "supported": false,
-            "evidence": ""
-        }},
-        "no_internal_tech_team": {{
-            "supported": false,
-            "evidence": ""
-        }},
-        "expansion_news": {{
+        "current_open_opportunity": {{
             "supported": false,
             "evidence": ""
         }},
@@ -300,99 +487,144 @@ Use this exact structure:
             "evidence": ""
         }}
     }},
-    "reason": "short explanation of the overall classification"
+    "reason": "short explanation of the classification"
 }}
 
-Remember:
-
-DO NOT calculate or provide a score.
-
+Do NOT calculate a score.
 Python will calculate the score from the signals.
 """
 
 
-    # ========================================================
-    # ASK QWEN TO ANALYZE THE RESULT
-    # ========================================================
+        # ========================================================
+        # ASK QWEN TO ANALYZE THE RESULT
+        # ========================================================
 
-    response = requests.post(
-        QWEN_URL,
-        json={
-            "model": QWEN_MODEL,
-            "prompt": prompt,
-            "stream": False
-        },
-        timeout=120
-    )
+        response = requests.post(
+    QWEN_URL,
+    json={
+        "model": QWEN_MODEL,
+        "prompt": prompt,
+        "stream": False,
+        "format": "json",
+        "think": False
+    },
+    timeout=120
+)
 
-    response.raise_for_status()
+        response.raise_for_status()
 
-    answer = response.json()["response"]
-
-
-    # ========================================================
-    # PARSE QWEN'S JSON
-    # ========================================================
-
-    try:
-        analysis = json.loads(answer)
-
-    except json.JSONDecodeError:
-
-        print("\nQwen returned invalid JSON:")
-        print(answer)
-        print("-" * 60)
-
-        continue
+        answer = response.json()["response"]
 
 
-    # ========================================================
-    # CALCULATE SCORE
-    # ========================================================
+        # ========================================================
+        # PARSE QWEN'S JSON
+        # ========================================================
 
-    score = 0
+        try:
+            analysis = json.loads(answer)
 
-    signals = analysis.get("signals", {})
+        except json.JSONDecodeError:
 
-    for signal, points in SCORE_WEIGHTS.items():
+            print("\nQwen returned invalid JSON:")
+            print(answer)
+            print("-" * 60)
 
-        signal_data = signals.get(signal, {})
+            continue
 
-        if signal_data.get("supported") is True:
-            score += points
+        # ========================================================
+        # CRITIC REVIEW
+        # ========================================================
+
+        # analysis = critic_review(analysis, company_info)
+
+        # ========================================================
+        # CALCULATE SCORE
+        # ========================================================
+
+        score = 0
+
+        signals = analysis.get("signals", {})
+
+        for signal, points in SCORE_WEIGHTS.items():
+
+            signal_data = signals.get(signal, {})
+
+            if signal_data.get("supported") is True:
+                score += points
 
 
-    # ========================================================
-    # DISPLAY RESULT
-    # ========================================================
+        # ========================================================
+        # DISPLAY RESULT
+        # ========================================================
 
-    print("\n" + "=" * 60)
+        print("\n" + "=" * 60)
 
-    print(f"Company: {analysis.get('company', 'Unknown')}")
-    print(f"Type: {analysis.get('type', 'Unknown')}")
-    print(f"Score: {score}/100")
+        print(f"Company: {analysis.get('company', 'Unknown')}")
+        print(f"Type: {analysis.get('type', 'Unknown')}")
+        print(f"Score: {score}/100")
 
-    print("\nSignals:")
+        print("\nSignals:")
 
-    for signal, points in SCORE_WEIGHTS.items():
+        for signal, points in SCORE_WEIGHTS.items():
 
-        signal_data = signals.get(signal, {})
+            signal_data = signals.get(signal, {})
 
-        supported = signal_data.get("supported", False)
-        evidence = signal_data.get("evidence", "")
+            supported = signal_data.get("supported", False)
+            evidence = signal_data.get("evidence", "")
 
-        if supported:
-            print(f"  [+{points}] {signal}")
-            print(f"       Evidence: {evidence}")
+            if supported:
+                print(f"  [+{points}] {signal}")
+                print(f"       Evidence: {evidence}")
 
+            else:
+                print(f"  [ 0] {signal}")
+
+        print("\nReason:")
+        print(analysis.get("reason", ""))
+
+        print("\nSource:")
+        print(result.get("url", ""))
+
+        print("=" * 60)
+
+
+        # ========================================================
+        # SAVE TO EXCEL
+        # ========================================================
+        # Save both types of relevant opportunities.
+        # Irrelevant results are discarded.
+
+        if analysis.get("type") in ["opportunity", "potential_opportunity"]:
+            save_lead(
+                company=analysis.get("company", "Unknown"),
+                lead_type=analysis.get("type", "Unknown"),
+                score=score,
+                reason=analysis.get("reason", ""),
+                url=result.get("url", ""),
+            )
         else:
-            print(f"  [ 0] {signal}")
+            print(
+                f"  Not saved ({analysis.get('type', 'unknown')}): "
+                f"{analysis.get('company', 'Unknown')}"
+            )
 
-    print("\nReason:")
-    print(analysis.get("reason", ""))
+# ============================================================
+# RUN ALL QUERIES
+# ============================================================
 
-    print("\nSource:")
-    print(result.get("url", ""))
+QUERIES = [
+    "Portugal project manager",
+    "Portugal project management",
+    "Portugal product manager",
+    "Portugal product management",
+    "Portugal technical project manager",
+    "Portugal digital project manager",
+    "Portugal project manager freelance",
+    "Portugal project manager contract",
+    "Portugal project manager consultant",
+    "Portugal project manager remote",
+]
 
-    print("=" * 60)
-
+for search_query in QUERIES:
+    print(f"\n\n### Running query: {search_query} ###")
+    run_query(search_query)
